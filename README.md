@@ -117,7 +117,19 @@ Stable Action also engages the iPhone's built-in ISP stabilisation on every fram
 
 ## Credits
 
-Designed and built by **[Rudra Shah](https://rudrashah.in)**
+Designed and built by **[Rudra Shah](https://rudrahsha.in)**
+
+---
+
+## Support
+
+If you find this project useful, consider buying me a coffee ☕
+
+<p align="center">
+  <a href="https://buymeacoffee.com/rudrashah">
+    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-rudrashah-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" />
+  </a>
+</p>
 
 ---
 
