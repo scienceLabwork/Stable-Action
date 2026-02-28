@@ -15,7 +15,8 @@ final class CameraManager: NSObject, ObservableObject {
 
     enum CameraType { case wide, ultraWide, telephoto }
 
-    @Published var cameraType: CameraType = .ultraWide {
+    /// Defaults to .wide (1x). Action mode auto-switches to .ultraWide for crop buffer.
+    @Published var cameraType: CameraType = .wide {
         didSet { sessionQueue.async { [weak self] in self?.reconfigureVideoInput() } }
     }
 
@@ -63,13 +64,15 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var actionModeEnabled = false {
         didSet {
             actionModeFlag = actionModeEnabled
+            // Auto-switch lens: ultraWide for Action (needs crop buffer), wide (1x) for Normal
+            cameraType = actionModeEnabled ? .ultraWide : .wide
             sessionQueue.async { self.applyStabilization() }
         }
     }
 
     // MARK: - Motion snapshot provider
 
-    /// Called by ContentView once — passes a closure that reads the MotionManager snapshot.
+    /// Set by ContentView once — reads the MotionManager's thread-safe snapshot.
     nonisolated(unsafe) var motionSnapshotProvider: () -> (roll: Double, offsetX: Double, offsetY: Double) = { (0, 0, 0) }
 
     // MARK: - Providers (kept for backwards-compat)

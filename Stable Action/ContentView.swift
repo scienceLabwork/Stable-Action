@@ -22,6 +22,35 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
 
+                // ── Top bar: credits ──────────────────────────────────────
+                HStack {
+                    Link(destination: URL(string: "https://buymeacoffee.com/rudrashah")!) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "cup.and.saucer.fill")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Buy me a coffee")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        }
+                        .foregroundStyle(.yellow)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.white.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Text("Original:")
+                            .foregroundStyle(.white.opacity(0.5))
+                        Text("Galaxy S26 Ultra")
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+
                 ZStack {
 
                     // ── Both preview layers always exist — toggle with opacity ──
