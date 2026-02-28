@@ -14,6 +14,7 @@
 import SwiftUI
 import MetalKit
 import CoreImage
+import QuartzCore
 
 // MARK: - Metal renderer
 
@@ -21,52 +22,88 @@ import CoreImage
 final class CropPreviewMTKView: MTKView {
 
     private let ciContext: CIContext
+    private let commandQueue: MTLCommandQueue
     private var latestImage: CIImage?
     private let renderLock = NSLock()
 
+    // CADisplayLink fires on the main run-loop at screen refresh rate.
+    // Camera frames are enqueued lock-free; the display link pulls the
+    // latest one each vsync — no main-queue spam, no frame bursts.
+    private var displayLink: CADisplayLink?
+
     override init(frame: CGRect, device: MTLDevice?) {
         let dev = device ?? MTLCreateSystemDefaultDevice()!
+        commandQueue = dev.makeCommandQueue()!
         ciContext = CIContext(mtlDevice: dev,
                               options: [.useSoftwareRenderer: false,
                                         .workingColorSpace: CGColorSpaceCreateDeviceRGB() as Any])
         super.init(frame: frame, device: dev)
-        framebufferOnly  = false          // needed so CIContext can render into it
-        enableSetNeedsDisplay = false      // drive via setNeedsDisplay calls
-        isPaused         = true           // we'll trigger draws manually
-        backgroundColor  = .black
-        contentScaleFactor = UIScreen.main.scale
-        autoResizeDrawable = true
-        delegate = nil                    // we override draw() directly
+        framebufferOnly     = false   // needed so CIContext can render into it
+        enableSetNeedsDisplay = false
+        isPaused            = true    // we drive draws via displayLink
+        backgroundColor     = .black
+        autoResizeDrawable  = true
+        delegate            = nil     // we override draw() directly
+
+        // Create display link but only start it when added to a window.
+        let link = CADisplayLink(target: self, selector: #selector(displayLinkFired))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
     }
 
     required init(coder: NSCoder) { fatalError() }
 
-    /// Called from CameraManager.previewFrameHandler (data-output queue).
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // Pick up the correct scale when we land in a window (avoids UIScreen.main deprecation).
+        if let screen = window?.windowScene?.screen {
+            contentScaleFactor = screen.scale
+        }
+    }
+
+    deinit {
+        displayLink?.invalidate()
+    }
+
+    // MARK: Frame enqueue (called on data-output queue — NOT main thread)
+
+    /// Stores the latest processed frame. The display link will pick it up on the next vsync.
     func enqueue(_ image: CIImage) {
         renderLock.lock()
         latestImage = image
         renderLock.unlock()
-        // Trigger a draw on the main thread.
-        DispatchQueue.main.async { [weak self] in self?.draw() }
+        // No main-thread dispatch needed — displayLink handles it.
     }
+
+    // MARK: Display-link callback (main thread, every vsync)
+
+    @objc private func displayLinkFired(_ link: CADisplayLink) {
+        renderLock.lock()
+        let hasImage = latestImage != nil
+        renderLock.unlock()
+        guard hasImage else { return }
+        draw()
+    }
+
+    // MARK: Draw
 
     override func draw(_ rect: CGRect) {
         renderLock.lock()
         let image = latestImage
         renderLock.unlock()
         guard let image,
-              let commandQueue = device?.makeCommandQueue(),
               let commandBuffer = commandQueue.makeCommandBuffer(),
-              let drawable = currentDrawable else { return }
+              let drawable      = currentDrawable else { return }
 
         let drawableSize = CGSize(width: drawableSize.width, height: drawableSize.height)
 
-        // Scale CIImage to fill the drawable, letterbox/pillarbox preserving aspect.
-        let imgW = image.extent.width
-        let imgH = image.extent.height
+        // Scale CIImage to fill the drawable, preserving aspect ratio (aspect-fit).
+        let imgW   = image.extent.width
+        let imgH   = image.extent.height
         let scaleX = drawableSize.width  / imgW
         let scaleY = drawableSize.height / imgH
-        let scale  = min(scaleX, scaleY)          // aspect-fit
+        let scale  = min(scaleX, scaleY)
 
         let scaledW = imgW * scale
         let scaledH = imgH * scale
@@ -86,9 +123,8 @@ final class CropPreviewMTKView: MTKView {
 
         renderDestination.isFlipped = true
 
-        // Clear to black then composite the image.
-        try? ciContext.startTask(toClear: renderDestination)
-        try? ciContext.startTask(toRender: displayed, to: renderDestination)
+        _ = try? ciContext.startTask(toClear: renderDestination)
+        _ = try? ciContext.startTask(toRender: displayed, to: renderDestination)
 
         commandBuffer.present(drawable)
         commandBuffer.commit()

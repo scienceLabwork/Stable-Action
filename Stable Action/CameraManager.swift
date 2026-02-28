@@ -46,6 +46,11 @@ final class CameraManager: NSObject, ObservableObject {
     nonisolated(unsafe) private var sessionAtSourceTime = false
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
+    // MARK: - Smoothing state (accessed only on dataOutputQueue)
+    nonisolated(unsafe) private var smoothedRoll:   Double = 0.0
+    nonisolated(unsafe) private var smoothedNormX:  Double = 0.0
+    nonisolated(unsafe) private var smoothedNormY:  Double = 0.0
+
     // MARK: - Published state
 
     @Published var permissionDenied = false
@@ -53,12 +58,21 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var lastVideoURL: URL?
 
     nonisolated(unsafe) private var isRecordingFlag = false
+    nonisolated(unsafe) private var actionModeFlag = false
 
     @Published var actionModeEnabled = false {
-        didSet { sessionQueue.async { self.applyStabilization() } }
+        didSet {
+            actionModeFlag = actionModeEnabled
+            sessionQueue.async { self.applyStabilization() }
+        }
     }
 
-    // MARK: - Providers (called on data-output queue, every frame)
+    // MARK: - Motion snapshot provider
+
+    /// Called by ContentView once — passes a closure that reads the MotionManager snapshot.
+    nonisolated(unsafe) var motionSnapshotProvider: () -> (roll: Double, offsetX: Double, offsetY: Double) = { (0, 0, 0) }
+
+    // MARK: - Providers (kept for backwards-compat)
 
     nonisolated(unsafe) var rollProvider: () -> Double = { 0.0 }
     nonisolated(unsafe) var translationProvider: () -> (Double, Double) = { (0.0, 0.0) }
@@ -140,7 +154,7 @@ final class CameraManager: NSObject, ObservableObject {
             audioDeviceInput = micInput
         }
 
-        videoDataOutput.alwaysDiscardsLateVideoFrames = false
+        videoDataOutput.alwaysDiscardsLateVideoFrames = true
         videoDataOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
         videoDataOutput.setSampleBufferDelegate(self, queue: dataOutputQueue)
         guard session.canAddOutput(videoDataOutput) else { return }
@@ -188,15 +202,21 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func best4by3Format(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
         let target = 4.0 / 3.0
-        var best: AVCaptureDevice.Format?; var bestW: Int32 = 0
+        var best60: AVCaptureDevice.Format?; var bestW60: Int32 = 0
+        var best30: AVCaptureDevice.Format?; var bestW30: Int32 = 0
         for fmt in device.formats {
             let d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
             guard d.width > 0, d.height > 0 else { continue }
             guard abs(Double(d.width) / Double(d.height) - target) < 0.01 else { continue }
-            guard fmt.videoSupportedFrameRateRanges.contains(where: { $0.maxFrameRate >= 30 }) else { continue }
-            if d.width > bestW { best = fmt; bestW = d.width }
+            let maxFPS = fmt.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 0
+            guard maxFPS >= 30 else { continue }
+            if maxFPS >= 60 {
+                if d.width > bestW60 { best60 = fmt; bestW60 = d.width }
+            } else {
+                if d.width > bestW30 { best30 = fmt; bestW30 = d.width }
+            }
         }
-        return best
+        return best60 ?? best30
     }
 
     private func enforceFourByThreeAndMinZoom() {
@@ -206,7 +226,9 @@ final class CameraManager: NSObject, ObservableObject {
             try device.lockForConfiguration()
             if let fmt = best4by3Format(for: device) {
                 device.activeFormat = fmt
-                let dur = CMTime(value: 1, timescale: 30)
+                let maxFPS = fmt.videoSupportedFrameRateRanges.map { $0.maxFrameRate }.max() ?? 30
+                let fps: Int32 = maxFPS >= 60 ? 60 : 30
+                let dur = CMTime(value: 1, timescale: fps)
                 device.activeVideoMinFrameDuration = dur
                 device.activeVideoMaxFrameDuration = dur
             }
@@ -345,8 +367,18 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     // MARK: - Frame processing
+    //
+    // Smoothing alphas for the exponential low-pass filter applied every frame.
+    // Roll uses a faster alpha so horizon lock feels instant.
+    // Translation uses a slower alpha so panning feels buttery like a gimbal.
+    private let rollSmoothingAlpha: Double        = 0.25
+    private let translationSmoothingAlpha: Double = 0.10
 
     nonisolated private func processVideoFrame(_ sampleBuffer: CMSampleBuffer) {
+        // In Normal mode, skip the entire CIImage pipeline — the plain
+        // AVCaptureVideoPreviewLayer handles display directly.
+        guard actionModeFlag else { return }
+
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
         // Step 1: orient landscape sensor buffer to portrait
@@ -354,9 +386,14 @@ final class CameraManager: NSObject, ObservableObject {
         let pW: CGFloat = ciImage.extent.width
         let pH: CGFloat = ciImage.extent.height
 
-        // Step 2: counter-rotate around the portrait centre by -roll
-        let roll:  CGFloat = CGFloat(rollProvider())
-        let angle: CGFloat = -roll
+        // Step 2: read motion snapshot and apply per-frame low-pass smoothing.
+        let snap = motionSnapshotProvider()
+
+        smoothedRoll  += rollSmoothingAlpha        * (snap.roll    - smoothedRoll)
+        smoothedNormX += translationSmoothingAlpha * (snap.offsetX - smoothedNormX)
+        smoothedNormY += translationSmoothingAlpha * (snap.offsetY - smoothedNormY)
+
+        let angle: CGFloat = CGFloat(-smoothedRoll)
         let cx = pW / 2;  let cy = pH / 2
 
         let centreRotation = CGAffineTransform(translationX: -cx, y: -cy)
@@ -364,9 +401,7 @@ final class CameraManager: NSObject, ObservableObject {
             .concatenating(CGAffineTransform(translationX:  cx, y:  cy))
         let rotated = ciImage.transformed(by: centreRotation)
 
-        // Step 3: crop to 3:4 rect, shifted by the motion-stabilisation translation.
-        //
-        // Use rotated.extent (larger than original after rotation) so margins are always >= 0.
+        // Step 3: crop to 3:4 rect with smoothed translation offset.
         let re = rotated.extent
         let shorter: CGFloat = min(pW, pH)
         let cropW: CGFloat   = shorter * CGFloat(cropFraction)
@@ -375,22 +410,20 @@ final class CameraManager: NSObject, ObservableObject {
         let marginX = max(0, (re.width  - cropW) / 2)
         let marginY = max(0, (re.height - cropH) / 2)
 
-        // The translation offset is in portrait screen space. Rotate it by the same
-        // angle as the image so the shift direction stays aligned with the screen.
-        let (normX, normY) = translationProvider()
         let cosA = cos(angle);  let sinA = sin(angle)
-        let rotNormX = CGFloat(normX) * cosA - CGFloat(normY) * sinA
-        let rotNormY = CGFloat(normX) * sinA + CGFloat(normY) * cosA
+        let rotNormX = CGFloat(smoothedNormX) * cosA - CGFloat(smoothedNormY) * sinA
+        let rotNormY = CGFloat(smoothedNormX) * sinA + CGFloat(smoothedNormY) * cosA
 
         let shiftX = rotNormX * marginX * 0.9
         let shiftY = rotNormY * marginY * 0.9
 
+        // No .integral — pixel-snapping causes visible 1 px jitter every frame.
         let cropRect = CGRect(
             x: re.midX - cropW / 2 + shiftX,
             y: re.midY - cropH / 2 + shiftY,
             width:  cropW,
             height: cropH
-        ).integral
+        )
 
         let cropped = rotated
             .cropped(to: cropRect)
@@ -457,7 +490,6 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output is AVCaptureVideoDataOutput {
-            // Always process — CameraPreview2 needs frames even when not recording.
             processVideoFrame(sampleBuffer)
         } else if output is AVCaptureAudioDataOutput {
             guard isRecordingFlag,

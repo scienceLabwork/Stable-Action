@@ -24,20 +24,20 @@ struct ContentView: View {
 
                 ZStack {
 
-                    // ── Preview layer — switches with actionModeEnabled ─────
-                    if camera.actionModeEnabled {
-                        // Action mode: stabilised horizon-crop pipeline
-                        CameraPreview2(camera: camera) { vp, dp in
-                            setFocus(view: vp, device: dp)
-                        }
-                        .transition(.opacity)
-                    } else {
-                        // Normal mode: plain full-frame camera preview
-                        CameraPreview(session: camera.session) { vp, dp in
-                            setFocus(view: vp, device: dp)
-                        }
-                        .transition(.opacity)
+                    // ── Both preview layers always exist — toggle with opacity ──
+                    // Normal mode: plain full-frame camera preview
+                    CameraPreview(session: camera.session) { vp, dp in
+                        setFocus(view: vp, device: dp)
                     }
+                    .opacity(camera.actionModeEnabled ? 0 : 1)
+                    .zIndex(camera.actionModeEnabled ? 0 : 1)
+
+                    // Action mode: stabilised horizon-crop pipeline
+                    CameraPreview2(camera: camera) { vp, dp in
+                        setFocus(view: vp, device: dp)
+                    }
+                    .opacity(camera.actionModeEnabled ? 1 : 0)
+                    .zIndex(camera.actionModeEnabled ? 1 : 0)
 
                     // ── Overlays (always on top) ──────────────────────────
                     if focusVisible, let pt = focusPoint {
@@ -133,6 +133,11 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            // Wire the thread-safe snapshot provider for the frame pipeline
+            camera.motionSnapshotProvider = { [weak motion] in
+                motion?.snapshot() ?? (0, 0, 0)
+            }
+            // Keep legacy providers for backwards compatibility
             camera.rollProvider = { [weak motion] in motion?.roll ?? 0.0 }
             camera.translationProvider = { [weak motion] in
                 (motion?.offsetX ?? 0.0, motion?.offsetY ?? 0.0)

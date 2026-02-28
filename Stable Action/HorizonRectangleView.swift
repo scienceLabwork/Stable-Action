@@ -15,69 +15,113 @@ import Combine
 
 final class MotionManager: ObservableObject {
 
-    /// Full-circle roll angle (radians) derived from the gravity vector.
+    // ── Published for SwiftUI (HorizonRectangleView overlay) ──────────
     @Published var roll: Double = 0.0
-
-    /// Crop-window translation in normalised sensor fractions (-1…+1).
-    /// +X = shift crop right (phone moved left), +Y = shift crop up (phone moved down).
-    /// CameraManager scales these by the available pixel margin before cropping.
     @Published var offsetX: Double = 0.0
     @Published var offsetY: Double = 0.0
 
-    private let motionManager = CMMotionManager()
+    // ── Thread-safe snapshot for CameraManager (read from data-output queue) ──
+    private let snapshotLock = NSLock()
+    private var _snapRoll:    Double = 0.0
+    private var _snapOffsetX: Double = 0.0
+    private var _snapOffsetY: Double = 0.0
 
-    // Velocity accumulators for the translation integrator (m/s, device frame).
+    /// Atomic read of the latest motion state — safe to call from any thread.
+    func snapshot() -> (roll: Double, offsetX: Double, offsetY: Double) {
+        snapshotLock.lock()
+        let r = _snapRoll; let x = _snapOffsetX; let y = _snapOffsetY
+        snapshotLock.unlock()
+        return (r, x, y)
+    }
+
+    private let motionManager = CMMotionManager()
+    private let motionQueue = OperationQueue()
+
+    // Velocity accumulators (accessed only on motionQueue).
     private var velX: Double = 0.0
     private var velY: Double = 0.0
 
-    // Tuning constants
-    /// dt between motion updates (must match deviceMotionUpdateInterval).
+    // ── Tuning constants ──────────────────────────────────────────────
     private let dt: Double = 1.0 / 120.0
-    /// How quickly the velocity bleeds off when there's no acceleration (0-1 per update).
-    /// Higher = snappier return to centre; lower = smoother but drifts more.
-    private let velocityDecay: Double = 0.88
-    /// How quickly the position offset returns to centre when the phone is still.
-    private let positionDecay: Double = 0.96
-    /// Scales raw acceleration (m/s²) into normalised offset units.
-    /// Tuned so a 0.5 g lateral jerk ≈ 0.3 normalised units of offset.
-    private let sensitivity: Double = 0.012
+
+    // Velocity decay: controls how fast lateral momentum bleeds off.
+    // Lower = smoother panning feel; higher = snappier stop.
+    private let velocityDecay: Double = 0.82
+
+    // Position decay: how quickly the crop drifts back to centre when still.
+    // Closer to 1.0 = slower return (more gimbal-like hold).
+    private let positionDecay: Double = 0.992
+
+    // Sensitivity: maps acceleration (m/s²) to normalised crop offset.
+    // Higher = crop reacts more to lateral movement (gimbal-like subject tracking).
+    private let sensitivity: Double = 0.035
+
+    // Acceleration dead-zone: ignore tiny vibrations below this threshold (m/s²).
+    private let accelDeadZone: Double = 0.02
 
     func start() {
         guard motionManager.isDeviceMotionAvailable else { return }
+
+        motionQueue.name = "com.stableaction.motion"
+        motionQueue.maxConcurrentOperationCount = 1
+        motionQueue.qualityOfService = .userInteractive
+
         motionManager.deviceMotionUpdateInterval = dt
         motionManager.startDeviceMotionUpdates(
             using: .xArbitraryZVertical,
-            to: .main
+            to: motionQueue
         ) { [weak self] data, _ in
             guard let self, let data else { return }
 
             // ── Roll ─────────────────────────────────────────────────
-            self.roll = atan2(data.gravity.x, -data.gravity.y)
+            let newRoll = atan2(data.gravity.x, -data.gravity.y)
 
             // ── Translation (X/Y shift) ───────────────────────────────
-            // userAcceleration has gravity removed; x = left/right, y = up/down
-            // in the device frame when held portrait.
-            let ax = data.userAcceleration.x   // positive = phone jerked right
-            let ay = data.userAcceleration.y   // positive = phone jerked up
+            var ax = data.userAcceleration.x
+            var ay = data.userAcceleration.y
+
+            // Dead-zone: kill micro-vibrations that cause jitter
+            if abs(ax) < self.accelDeadZone { ax = 0 }
+            if abs(ay) < self.accelDeadZone { ay = 0 }
 
             // Integrate acceleration → velocity, then decay
             self.velX = (self.velX + ax * self.dt) * self.velocityDecay
             self.velY = (self.velY + ay * self.dt) * self.velocityDecay
 
-            // Integrate velocity → offset, then decay toward zero
+            // Integrate velocity → offset, then decay toward centre
             // Negate: if phone jerks right we shift crop left to compensate
-            self.offsetX = (self.offsetX - self.velX * self.sensitivity) * self.positionDecay
-            self.offsetY = (self.offsetY - self.velY * self.sensitivity) * self.positionDecay
+            var newOffX = (self._snapOffsetX - self.velX * self.sensitivity) * self.positionDecay
+            var newOffY = (self._snapOffsetY - self.velY * self.sensitivity) * self.positionDecay
 
-            // Clamp to ±1 so we never ask for a crop outside the sensor buffer
-            self.offsetX = max(-1.0, min(1.0, self.offsetX))
-            self.offsetY = max(-1.0, min(1.0, self.offsetY))
+            // Clamp to ±1
+            newOffX = max(-1.0, min(1.0, newOffX))
+            newOffY = max(-1.0, min(1.0, newOffY))
+
+            // Write to thread-safe snapshot (for CameraManager)
+            self.snapshotLock.lock()
+            self._snapRoll    = newRoll
+            self._snapOffsetX = newOffX
+            self._snapOffsetY = newOffY
+            self.snapshotLock.unlock()
+
+            // Publish to main thread for SwiftUI overlay
+            DispatchQueue.main.async {
+                self.roll    = newRoll
+                self.offsetX = newOffX
+                self.offsetY = newOffY
+            }
         }
     }
 
     func stop() {
         motionManager.stopDeviceMotionUpdates()
-        velX = 0; velY = 0; offsetX = 0; offsetY = 0
+        snapshotLock.lock()
+        _snapRoll = 0; _snapOffsetX = 0; _snapOffsetY = 0
+        snapshotLock.unlock()
+        velX = 0; velY = 0
+        DispatchQueue.main.async { [weak self] in
+            self?.roll = 0; self?.offsetX = 0; self?.offsetY = 0
+        }
     }
 }
 
