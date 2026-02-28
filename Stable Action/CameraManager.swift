@@ -58,24 +58,21 @@ final class CameraManager: NSObject, ObservableObject {
         didSet { sessionQueue.async { self.applyStabilization() } }
     }
 
-    // MARK: - Providers (called on data-output queue every frame)
+    // MARK: - Providers (called on data-output queue, every frame)
 
-    /// Current device roll in radians.
     nonisolated(unsafe) var rollProvider: () -> Double = { 0.0 }
-
-    /// Current translation offset as normalised fractions (-1...+1).
     nonisolated(unsafe) var translationProvider: () -> (Double, Double) = { (0.0, 0.0) }
 
     // MARK: - Preview frame handler
 
-    /// Receives every processed CIImage on the data-output queue (always, not just when recording).
+    /// Set by CameraPreview2. Receives the fully-processed CIImage every frame.
     nonisolated(unsafe) var previewFrameHandler: ((CIImage) -> Void)? = nil
 
     // MARK: - Crop geometry constants (must match HorizonRectangleView)
 
-    private let cropFraction: Double = 3.0 / 5.0 * 0.90   // W = min(sensorW,sensorH) * this
-    private let cropAspectW: Double = 3.0
-    private let cropAspectH: Double = 4.0
+    private let cropFraction: Double = 3.0 / 5.0 * 0.90
+    private let cropAspectW: Double  = 3.0
+    private let cropAspectH: Double  = 4.0
 
     // MARK: - Lifecycle
 
@@ -136,7 +133,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         enforceFourByThreeAndMinZoom()
 
-        if let mic = AVCaptureDevice.default(for: .audio),
+        if let mic      = AVCaptureDevice.default(for: .audio),
            let micInput = try? AVCaptureDeviceInput(device: mic),
            session.canAddInput(micInput) {
             session.addInput(micInput)
@@ -160,7 +157,6 @@ final class CameraManager: NSObject, ObservableObject {
     private func applyStabilization() {
         guard let conn = videoDataOutput.connection(with: .video) else { return }
         guard conn.isVideoStabilizationSupported else { return }
-
         if actionModeEnabled {
             if #available(iOS 18.0, *) {
                 conn.preferredVideoStabilizationMode = .cinematicExtendedEnhanced
@@ -192,8 +188,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func best4by3Format(for device: AVCaptureDevice) -> AVCaptureDevice.Format? {
         let target = 4.0 / 3.0
-        var best: AVCaptureDevice.Format?
-        var bestW: Int32 = 0
+        var best: AVCaptureDevice.Format?; var bestW: Int32 = 0
         for fmt in device.formats {
             let d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
             guard d.width > 0, d.height > 0 else { continue }
@@ -230,8 +225,7 @@ final class CameraManager: NSObject, ObservableObject {
         if let dev = selectVideoDevice(for: cameraType, position: .back),
            let inp = try? AVCaptureDeviceInput(device: dev),
            session.canAddInput(inp) {
-            session.addInput(inp)
-            videoDeviceInput = inp
+            session.addInput(inp); videoDeviceInput = inp
             enforceFourByThreeAndMinZoom()
         }
         session.commitConfiguration()
@@ -251,7 +245,6 @@ final class CameraManager: NSObject, ObservableObject {
             if dev.isFocusPointOfInterestSupported    { dev.focusPointOfInterest    = point; dev.focusMode    = .autoFocus }
             if dev.isExposurePointOfInterestSupported { dev.exposurePointOfInterest = point; dev.exposureMode = .autoExpose }
             dev.unlockForConfiguration()
-
             DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
                 guard let self, let dev = self.videoDeviceInput?.device else { return }
                 try? dev.lockForConfiguration()
@@ -270,13 +263,12 @@ final class CameraManager: NSObject, ObservableObject {
         } else {
             sessionQueue.async {
                 guard let device = self.videoDeviceInput?.device else { return }
-                let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                // Sensor is landscape; after .oriented(.right) portrait short side = min(w,h)
+                let dims        = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
                 let sensorShort = Double(min(dims.width, dims.height))
-                let cropW_d = sensorShort * self.cropFraction
-                let cropH_d = cropW_d * (self.cropAspectH / self.cropAspectW)
-                let outW = max(2, Int(cropW_d) & ~1)
-                let outH = max(2, Int(cropH_d) & ~1)
+                let cropW_d     = sensorShort * self.cropFraction
+                let cropH_d     = cropW_d * (self.cropAspectH / self.cropAspectW)
+                let outW        = max(2, Int(cropW_d) & ~1)
+                let outH        = max(2, Int(cropH_d) & ~1)
                 self.dataOutputQueue.async { self.startRecording(outW: outW, outH: outH) }
             }
         }
@@ -312,8 +304,7 @@ final class CameraManager: NSObject, ObservableObject {
             kCVPixelBufferHeightKey          as String: outH
         ]
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(
-            assetWriterInput: vInput,
-            sourcePixelBufferAttributes: adaptorAttrs)
+            assetWriterInput: vInput, sourcePixelBufferAttributes: adaptorAttrs)
 
         let aInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
         aInput.expectsMediaDataInRealTime = true
@@ -322,7 +313,7 @@ final class CameraManager: NSObject, ObservableObject {
         if writer.canAdd(aInput) { writer.add(aInput) }
 
         guard writer.startWriting() else {
-            print("AssetWriter failed to start:", writer.error as Any); return
+            print("AssetWriter failed:", writer.error as Any); return
         }
 
         assetWriter         = writer
@@ -332,7 +323,6 @@ final class CameraManager: NSObject, ObservableObject {
         recordingURL        = url
         sessionAtSourceTime = false
         isRecordingFlag     = true
-
         DispatchQueue.main.async { self.isRecording = true }
     }
 
@@ -344,7 +334,6 @@ final class CameraManager: NSObject, ObservableObject {
         videoWriterInput   = nil
         audioWriterInput   = nil
         pixelBufferAdaptor = nil
-
         DispatchQueue.main.async { self.isRecording = false }
 
         let url = recordingURL
@@ -360,48 +349,42 @@ final class CameraManager: NSObject, ObservableObject {
     nonisolated private func processVideoFrame(_ sampleBuffer: CMSampleBuffer) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // Step 1: orient sensor landscape buffer to portrait
+        // Step 1: orient landscape sensor buffer to portrait
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         let pW: CGFloat = ciImage.extent.width
         let pH: CGFloat = ciImage.extent.height
 
-        // Step 2: counter-rotate around the portrait image centre by -roll
-        let roll  = CGFloat(rollProvider())
-        let angle = -roll
-        let cx = pW / 2
-        let cy = pH / 2
+        // Step 2: counter-rotate around the portrait centre by -roll
+        let roll:  CGFloat = CGFloat(rollProvider())
+        let angle: CGFloat = -roll
+        let cx = pW / 2;  let cy = pH / 2
 
         let centreRotation = CGAffineTransform(translationX: -cx, y: -cy)
             .concatenating(CGAffineTransform(rotationAngle: angle))
             .concatenating(CGAffineTransform(translationX:  cx, y:  cy))
         let rotated = ciImage.transformed(by: centreRotation)
 
-        // Step 3: compute crop rect, shifted by the motion-stabilisation translation.
+        // Step 3: crop to 3:4 rect, shifted by the motion-stabilisation translation.
         //
-        // After rotation the CIImage extent is larger than the original portrait frame.
-        // We use rotated.extent as the base so margins are always positive.
-        let re   = rotated.extent                         // actual bounding box post-rotation
-        let shorter: CGFloat = min(pW, pH)                // portrait short side (pre-rotation)
+        // Use rotated.extent (larger than original after rotation) so margins are always >= 0.
+        let re = rotated.extent
+        let shorter: CGFloat = min(pW, pH)
         let cropW: CGFloat   = shorter * CGFloat(cropFraction)
         let cropH: CGFloat   = cropW   * CGFloat(cropAspectH / cropAspectW)
 
-        // Safe margin on each side (always >= 0)
         let marginX = max(0, (re.width  - cropW) / 2)
         let marginY = max(0, (re.height - cropH) / 2)
 
-        // translationProvider gives offsets in portrait screen space.
-        // The rotated CIImage has its axes tilted by `roll`, so we rotate the
-        // 2-D offset vector by -roll to align it with the rotated image axes.
+        // The translation offset is in portrait screen space. Rotate it by the same
+        // angle as the image so the shift direction stays aligned with the screen.
         let (normX, normY) = translationProvider()
-        let cosA = cos(angle)   // angle = -roll
-        let sinA = sin(angle)
+        let cosA = cos(angle);  let sinA = sin(angle)
         let rotNormX = CGFloat(normX) * cosA - CGFloat(normY) * sinA
         let rotNormY = CGFloat(normX) * sinA + CGFloat(normY) * cosA
 
-        let shiftX = rotNormX * marginX * 0.9   // 0.9 = safety gap so we never touch the edge
+        let shiftX = rotNormX * marginX * 0.9
         let shiftY = rotNormY * marginY * 0.9
 
-        // Anchor the crop at the centre of the rotated extent, then shift
         let cropRect = CGRect(
             x: re.midX - cropW / 2 + shiftX,
             y: re.midY - cropH / 2 + shiftY,
@@ -414,10 +397,10 @@ final class CameraManager: NSObject, ObservableObject {
             .transformed(by: CGAffineTransform(translationX: -cropRect.minX,
                                                y:            -cropRect.minY))
 
-        // Always deliver to the live preview
+        // Always deliver to the live preview handler
         previewFrameHandler?(cropped)
 
-        // Step 4: write to file only when recording
+        // Step 4: write to file (only when recording)
         guard let writer  = assetWriter,
               let vInput  = videoWriterInput,
               let adaptor = pixelBufferAdaptor,
@@ -441,7 +424,6 @@ final class CameraManager: NSObject, ObservableObject {
                          to: destBuffer,
                          bounds: CGRect(x: 0, y: 0, width: renderW, height: renderH),
                          colorSpace: CGColorSpaceCreateDeviceRGB())
-
         adaptor.append(destBuffer, withPresentationTime: pts)
     }
 
@@ -475,6 +457,7 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate,
                                    didOutput sampleBuffer: CMSampleBuffer,
                                    from connection: AVCaptureConnection) {
         if output is AVCaptureVideoDataOutput {
+            // Always process — CameraPreview2 needs frames even when not recording.
             processVideoFrame(sampleBuffer)
         } else if output is AVCaptureAudioDataOutput {
             guard isRecordingFlag,
