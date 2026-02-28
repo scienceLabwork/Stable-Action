@@ -63,6 +63,7 @@ final class CameraManager: NSObject, ObservableObject {
     nonisolated(unsafe) var rollProvider: () -> Double = { 0.0 }
 
     // MARK: - Preview frame handler
+
     /// Receives every processed (rotated + roll-cropped) CIImage on the data-output queue,
     /// regardless of whether recording is active. Set by CameraPreview2 to drive its display.
     nonisolated(unsafe) var previewFrameHandler: ((CIImage) -> Void)? = nil
@@ -159,14 +160,25 @@ final class CameraManager: NSObject, ObservableObject {
         applyStabilization()
     }
 
+    // MARK: - Stabilization
+
     private func applyStabilization() {
         guard let conn = videoDataOutput.connection(with: .video) else { return }
-        if conn.isVideoStabilizationSupported {
-            conn.preferredVideoStabilizationMode = actionModeEnabled
-                ? .cinematicExtendedEnhanced
-                : .auto
+        guard conn.isVideoStabilizationSupported else { return }
+
+        if actionModeEnabled {
+            // Action mode: use the most aggressive ISP stabilisation the OS supports.
+            // .cinematicExtendedEnhanced requires iOS 18+; .cinematicExtended requires iOS 13+.
+            // AVFoundation silently clamps to .off for formats that don't support the chosen mode.
+            if #available(iOS 18.0, *) {
+                conn.preferredVideoStabilizationMode = .cinematicExtendedEnhanced
+            } else {
+                conn.preferredVideoStabilizationMode = .cinematicExtended
+            }
+        } else {
+            // Standard mode: .auto lets the system pick OIS when available.
+            conn.preferredVideoStabilizationMode = .auto
         }
-        session.sessionPreset = .inputPriority
     }
 
     // MARK: - Device selection
