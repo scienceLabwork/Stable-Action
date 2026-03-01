@@ -97,6 +97,41 @@ Stable Action also engages the iPhone's built-in ISP stabilisation on every fram
 
 ---
 
+## Installation
+
+> **No App Store required.** Download the `.ipa` directly from the [Releases page](https://github.com/scienceLabwork/Stable-Action/releases) and sideload it onto your iPhone using one of the methods below.
+
+### Method 1 — AltStore (recommended, free)
+
+1. Install **[AltStore](https://altstore.io)** on your Mac or PC and follow its one-time setup guide to install the AltStore companion app on your iPhone.
+2. Download **`StableAction_1.0.ipa`** from the [latest release](https://github.com/scienceLabwork/Stable-Action/releases/latest).
+3. Open the `.ipa` file on your iPhone (tap *Share → AltStore → Install App*), **or** drag the `.ipa` onto the AltStore window on your computer.
+4. AltStore will sign and install the app. Once installed, open **Stable Action** from your home screen.
+
+> AltStore re-signs the app automatically every 7 days as long as your iPhone is on the same Wi-Fi network as the AltStore desktop app.
+
+### Method 2 — Sideloadly (free, Windows & Mac)
+
+1. Download and install **[Sideloadly](https://sideloadly.io)** on your computer.
+2. Download **`StableAction_1.0.ipa`** from the [latest release](https://github.com/scienceLabwork/Stable-Action/releases/latest).
+3. Connect your iPhone to your computer with a USB cable and trust the computer when prompted.
+4. Open Sideloadly, drag the `.ipa` into the window, enter your Apple ID, and click **Start**.
+5. On your iPhone go to **Settings → General → VPN & Device Management**, tap your Apple ID, and tap **Trust**.
+6. Open **Stable Action** from your home screen.
+
+> Like AltStore, Sideloadly apps expire after 7 days with a free Apple ID and must be re-signed. A paid Apple Developer account ($99/year) extends this to 1 year.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| "Untrusted Developer" alert | Settings → General → VPN & Device Management → Trust your Apple ID |
+| App crashes on launch | Make sure you are on **iOS 16 or later** |
+| Install fails in Sideloadly | Try a different USB cable or port, or restart Sideloadly |
+| AltStore can't find the app | Ensure iPhone and Mac/PC are on the same Wi-Fi network |
+
+---
+
 ## Requirements
 
 - iPhone with iOS 16 or later
