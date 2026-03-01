@@ -12,6 +12,7 @@ struct ContentView: View {
     @StateObject private var camera = CameraManager()
     @StateObject private var motion = MotionManager()
     @State private var showingPlayer = false
+    @State private var showingGallery = false
     @State private var focusPoint: CGPoint? = nil
     @State private var focusVisible = false
     @State private var focusID = UUID()
@@ -41,9 +42,9 @@ struct ContentView: View {
                     Spacer()
 
                     HStack(spacing: 4) {
-                        Text("Original:")
+                        Text("Developer:")
                             .foregroundStyle(.white.opacity(0.5))
-                        Text("Galaxy S26 Ultra")
+                        Text("Rudra Shah")
                             .foregroundStyle(.white.opacity(0.75))
                     }
                     .font(.system(size: 11, weight: .medium, design: .rounded))
@@ -67,6 +68,7 @@ struct ContentView: View {
                     }
                     .opacity(camera.actionModeEnabled ? 1 : 0)
                     .zIndex(camera.actionModeEnabled ? 1 : 0)
+                        
 
                     // ── Overlays (always on top) ──────────────────────────
                     if focusVisible, let pt = focusPoint {
@@ -133,7 +135,17 @@ struct ContentView: View {
 
                         Spacer()
 
-                        Color.clear.frame(width: 54, height: 54)
+                        // Gallery button
+                        Button { showingGallery = true } label: {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(.white.opacity(0.12))
+                                    .frame(width: 54, height: 54)
+                                Image(systemName: "photo.on.rectangle.angled")
+                                    .font(.system(size: 20, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.85))
+                            }
+                        }
                     }
                     .padding(.horizontal, 24)
 
@@ -177,8 +189,11 @@ struct ContentView: View {
         .onDisappear { camera.stop(); motion.stop() }
         .fullScreenCover(isPresented: $showingPlayer) {
             if let url = camera.lastVideoURL {
-                VideoPlayerView(url: url, isPresented: $showingPlayer)
+                VideoPlayerView(url: url)
             }
+        }
+        .fullScreenCover(isPresented: $showingGallery) {
+            GalleryView()
         }
     }
 
@@ -213,9 +228,11 @@ private struct RecordButton: View {
 
 private struct VideoThumbnailView: View {
     let url: URL?
+    @State private var thumb: UIImage?
+
     var body: some View {
         Group {
-            if let url, let thumb = generateThumbnail(url: url) {
+            if let thumb {
                 Image(uiImage: thumb).resizable().scaledToFill()
                     .overlay(
                         Image(systemName: "play.fill")
@@ -228,21 +245,23 @@ private struct VideoThumbnailView: View {
                     .overlay(Image(systemName: "video.fill").foregroundStyle(.white.opacity(0.5)))
             }
         }
+        .onChange(of: url) { loadThumbnail($1) }
+        .onAppear { loadThumbnail(url) }
     }
-    private func generateThumbnail(url: URL) -> UIImage? {
+
+    private func loadThumbnail(_ url: URL?) {
+        guard let url else { thumb = nil; return }
         let asset = AVURLAsset(url: url)
         let gen   = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
         gen.maximumSize = CGSize(width: 120, height: 120)
         let time = CMTime(seconds: 0.1, preferredTimescale: 600)
-        var result: UIImage?
-        let sem = DispatchSemaphore(value: 0)
         gen.generateCGImageAsynchronously(for: time) { cg, _, _ in
-            if let cg { result = UIImage(cgImage: cg) }
-            sem.signal()
+            if let cg {
+                let img = UIImage(cgImage: cg)
+                DispatchQueue.main.async { self.thumb = img }
+            }
         }
-        sem.wait()
-        return result
     }
 }
 
@@ -250,20 +269,22 @@ private struct VideoThumbnailView: View {
 
 struct VideoPlayerView: View {
     let url: URL
-    @Binding var isPresented: Bool
+    @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
             if let player { VideoPlayer(player: player).ignoresSafeArea() }
             Button {
-                player?.pause(); isPresented = false
+                player?.pause()
+                dismiss()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 30))
                     .foregroundStyle(.white, .black.opacity(0.5))
                     .padding(20)
             }
+            .contentShape(Rectangle())
         }
         .onAppear  { let p = AVPlayer(url: url); player = p; p.play() }
         .onDisappear { player?.pause() }

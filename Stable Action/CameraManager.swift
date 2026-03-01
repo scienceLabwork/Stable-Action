@@ -37,7 +37,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let audioDataOutput = AVCaptureAudioDataOutput()
     private let dataOutputQueue = DispatchQueue(label: "camera.data.output", qos: .userInteractive)
 
-    // MARK: - Asset writer (all accessed exclusively on dataOutputQueue)
+    // MARK: - Asset writer (ALL accessed exclusively on dataOutputQueue)
 
     nonisolated(unsafe) private var assetWriter: AVAssetWriter?
     nonisolated(unsafe) private var videoWriterInput: AVAssetWriterInput?
@@ -45,9 +45,11 @@ final class CameraManager: NSObject, ObservableObject {
     nonisolated(unsafe) private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     nonisolated(unsafe) private var recordingURL: URL?
     nonisolated(unsafe) private var sessionAtSourceTime = false
+    nonisolated(unsafe) private var isRecordingFlag = false
     private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
 
     // MARK: - Smoothing state (accessed only on dataOutputQueue)
+
     nonisolated(unsafe) private var smoothedRoll:   Double = 0.0
     nonisolated(unsafe) private var smoothedNormX:  Double = 0.0
     nonisolated(unsafe) private var smoothedNormY:  Double = 0.0
@@ -58,13 +60,11 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var lastVideoURL: URL?
 
-    nonisolated(unsafe) private var isRecordingFlag = false
     nonisolated(unsafe) private var actionModeFlag = false
 
     @Published var actionModeEnabled = false {
         didSet {
             actionModeFlag = actionModeEnabled
-            // Auto-switch lens: ultraWide for Action (needs crop buffer), wide (1x) for Normal
             cameraType = actionModeEnabled ? .ultraWide : .wide
             sessionQueue.async { self.applyStabilization() }
         }
@@ -72,7 +72,6 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - Motion snapshot provider
 
-    /// Set by ContentView once — reads the MotionManager's thread-safe snapshot.
     nonisolated(unsafe) var motionSnapshotProvider: () -> (roll: Double, offsetX: Double, offsetY: Double) = { (0, 0, 0) }
 
     // MARK: - Providers (kept for backwards-compat)
@@ -82,10 +81,9 @@ final class CameraManager: NSObject, ObservableObject {
 
     // MARK: - Preview frame handler
 
-    /// Set by CameraPreview2. Receives the fully-processed CIImage every frame.
     nonisolated(unsafe) var previewFrameHandler: ((CIImage) -> Void)? = nil
 
-    // MARK: - Crop geometry constants (must match HorizonRectangleView)
+    // MARK: - Crop geometry constants
 
     private let cropFraction: Double = 3.0 / 5.0 * 0.90
     private let cropAspectW: Double  = 3.0
@@ -123,9 +121,12 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func stop() {
+        dataOutputQueue.async { [weak self] in
+            guard let self else { return }
+            if self.isRecordingFlag { self.stopRecording() }
+        }
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            if self.isRecording { self.stopRecording() }
             if self.session.isRunning { self.session.stopRunning() }
         }
     }
@@ -281,26 +282,47 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     // MARK: - Recording
+    //
+    // All writer state is owned exclusively by dataOutputQueue.
+    // toggleRecording reads device dims on sessionQueue, then jumps to
+    // dataOutputQueue for start/stop — only ONE queue touches writer.
 
     func toggleRecording() {
-        if isRecordingFlag {
-            dataOutputQueue.async { self.stopRecording() }
-        } else {
-            sessionQueue.async {
-                guard let device = self.videoDeviceInput?.device else { return }
-                let dims        = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                let sensorShort = Double(min(dims.width, dims.height))
-                let cropW_d     = sensorShort * self.cropFraction
-                let cropH_d     = cropW_d * (self.cropAspectH / self.cropAspectW)
-                let outW        = max(2, Int(cropW_d) & ~1)
-                let outH        = max(2, Int(cropH_d) & ~1)
-                self.dataOutputQueue.async { self.startRecording(outW: outW, outH: outH) }
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            let dims: CMVideoDimensions
+            if let device = self.videoDeviceInput?.device {
+                dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+            } else {
+                dims = CMVideoDimensions(width: 1920, height: 1080)
+            }
+            let isAction = self.actionModeFlag
+
+            self.dataOutputQueue.async {
+                if self.isRecordingFlag {
+                    self.stopRecording()
+                } else {
+                    let outW: Int
+                    let outH: Int
+                    if isAction {
+                        let sensorShort = Double(min(dims.width, dims.height))
+                        let cropW_d     = sensorShort * self.cropFraction
+                        let cropH_d     = cropW_d * (self.cropAspectH / self.cropAspectW)
+                        outW = max(2, Int(cropW_d) & ~1)
+                        outH = max(2, Int(cropH_d) & ~1)
+                    } else {
+                        outW = max(2, Int(dims.width)  & ~1)
+                        outH = max(2, Int(dims.height) & ~1)
+                    }
+                    self.startRecording(outW: outW, outH: outH)
+                }
             }
         }
     }
 
+    /// Must be called on dataOutputQueue.
     private func startRecording(outW: Int, outH: Int) {
-        guard outW > 0, outH > 0 else { return }
+        guard !isRecordingFlag, outW > 0, outH > 0 else { return }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -321,7 +343,7 @@ final class CameraManager: NSObject, ObservableObject {
         ]
         let vInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         vInput.expectsMediaDataInRealTime = true
-        vInput.transform = .identity
+        vInput.transform = actionModeFlag ? .identity : CGAffineTransform(rotationAngle: .pi / 2)
 
         let adaptorAttrs: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -351,6 +373,7 @@ final class CameraManager: NSObject, ObservableObject {
         DispatchQueue.main.async { self.isRecording = true }
     }
 
+    /// Must be called on dataOutputQueue.
     private func stopRecording() {
         guard isRecordingFlag, let writer = assetWriter else { return }
 
@@ -362,34 +385,49 @@ final class CameraManager: NSObject, ObservableObject {
         DispatchQueue.main.async { self.isRecording = false }
 
         let url = recordingURL
+        recordingURL = nil
         writer.finishWriting {
-            guard let url else { return }
+            guard let url, writer.status == .completed else {
+                print("finishWriting error:", writer.error as Any); return
+            }
             DispatchQueue.main.async { self.lastVideoURL = url }
             self.saveVideoToLibrary(url: url)
         }
     }
 
     // MARK: - Frame processing
-    //
-    // Smoothing alphas for the exponential low-pass filter applied every frame.
-    // Roll uses a faster alpha so horizon lock feels instant.
-    // Translation uses a slower alpha so panning feels buttery like a gimbal.
+
     private let rollSmoothingAlpha: Double        = 0.25
     private let translationSmoothingAlpha: Double = 0.10
 
+    /// Called on dataOutputQueue by captureOutput.
     nonisolated private func processVideoFrame(_ sampleBuffer: CMSampleBuffer) {
-        // In Normal mode, skip the entire CIImage pipeline — the plain
-        // AVCaptureVideoPreviewLayer handles display directly.
-        guard actionModeFlag else { return }
+
+        // ── Normal mode: write raw buffer directly. No copies, no async. ──
+        if !actionModeFlag {
+            guard isRecordingFlag,
+                  let writer = assetWriter,
+                  let vInput = videoWriterInput,
+                  writer.status == .writing,
+                  vInput.isReadyForMoreMediaData else { return }
+
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            if !sessionAtSourceTime {
+                writer.startSession(atSourceTime: pts)
+                sessionAtSourceTime = true
+            }
+            vInput.append(sampleBuffer)
+            return
+        }
+
+        // ── Action mode: full stabilisation pipeline ──
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // Step 1: orient landscape sensor buffer to portrait
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer).oriented(.right)
         let pW: CGFloat = ciImage.extent.width
         let pH: CGFloat = ciImage.extent.height
 
-        // Step 2: read motion snapshot and apply per-frame low-pass smoothing.
         let snap = motionSnapshotProvider()
 
         smoothedRoll  += rollSmoothingAlpha        * (snap.roll    - smoothedRoll)
@@ -404,7 +442,6 @@ final class CameraManager: NSObject, ObservableObject {
             .concatenating(CGAffineTransform(translationX:  cx, y:  cy))
         let rotated = ciImage.transformed(by: centreRotation)
 
-        // Step 3: crop to 3:4 rect with smoothed translation offset.
         let re = rotated.extent
         let shorter: CGFloat = min(pW, pH)
         let cropW: CGFloat   = shorter * CGFloat(cropFraction)
@@ -420,7 +457,6 @@ final class CameraManager: NSObject, ObservableObject {
         let shiftX = rotNormX * marginX * 0.9
         let shiftY = rotNormY * marginY * 0.9
 
-        // No .integral — pixel-snapping causes visible 1 px jitter every frame.
         let cropRect = CGRect(
             x: re.midX - cropW / 2 + shiftX,
             y: re.midY - cropH / 2 + shiftY,
@@ -433,11 +469,10 @@ final class CameraManager: NSObject, ObservableObject {
             .transformed(by: CGAffineTransform(translationX: -cropRect.minX,
                                                y:            -cropRect.minY))
 
-        // Always deliver to the live preview handler
         previewFrameHandler?(cropped)
 
-        // Step 4: write to file (only when recording)
-        guard let writer  = assetWriter,
+        guard isRecordingFlag,
+              let writer  = assetWriter,
               let vInput  = videoWriterInput,
               let adaptor = pixelBufferAdaptor,
               writer.status == .writing,

@@ -40,6 +40,9 @@ final class MotionManager: ObservableObject {
     // Velocity accumulators (accessed only on motionQueue).
     private var velX: Double = 0.0
     private var velY: Double = 0.0
+    // Continuous roll tracking — unwraps atan2 jumps at ±180°
+    private var previousRawRoll: Double = 0.0
+    private var rollUnwrapped:   Double = 0.0
 
     // ── Tuning constants ──────────────────────────────────────────────
     private let dt: Double = 1.0 / 120.0
@@ -73,8 +76,15 @@ final class MotionManager: ObservableObject {
         ) { [weak self] data, _ in
             guard let self, let data else { return }
 
-            // ── Roll ─────────────────────────────────────────────────
-            let newRoll = atan2(data.gravity.x, -data.gravity.y)
+            // ── Roll (continuous 360°, no flip at ±180°) ─────────────────
+            let rawRoll = atan2(data.gravity.x, -data.gravity.y)  // in (-π, π]
+            var delta = rawRoll - self.previousRawRoll
+            // Unwrap: if the jump is > π it crossed the ±180° boundary
+            if delta >  Double.pi { delta -= 2 * Double.pi }
+            if delta < -Double.pi { delta += 2 * Double.pi }
+            self.previousRawRoll  = rawRoll
+            self.rollUnwrapped   += delta
+            let newRoll = self.rollUnwrapped
 
             // ── Translation (X/Y shift) ───────────────────────────────
             var ax = data.userAcceleration.x
@@ -119,6 +129,7 @@ final class MotionManager: ObservableObject {
         _snapRoll = 0; _snapOffsetX = 0; _snapOffsetY = 0
         snapshotLock.unlock()
         velX = 0; velY = 0
+        previousRawRoll = 0; rollUnwrapped = 0
         DispatchQueue.main.async { [weak self] in
             self?.roll = 0; self?.offsetX = 0; self?.offsetY = 0
         }
