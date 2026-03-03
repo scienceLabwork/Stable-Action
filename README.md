@@ -169,7 +169,7 @@ If you find this project useful, consider buying me a coffee ☕
 
 ## Credits
 
-Designed and built by **[Rudra Shah](https://rudrahsha.in)**
+Designed and built by **[Rudra Shah](https://rudrashah.in)**
 
 _Thanks to that one girl who motivated me. Thank you P._
 
