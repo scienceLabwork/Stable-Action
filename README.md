@@ -171,6 +171,8 @@ If you find this project useful, consider buying me a coffee ☕
 
 Designed and built by **[Rudra Shah](https://rudrahsha.in)**
 
+_Thanks to that one girl who motivated me. Thank you P._
+
 ---
 
 <p align="center">
